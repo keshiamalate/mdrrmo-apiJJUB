@@ -1,46 +1,89 @@
 <?php
+declare(strict_types=1);
+
 /**
- * Database connection (PostgreSQL / PostGIS).
- * NEVER put passwords in this file. Set them as environment variables:
- *   DATABASE_URL = postgresql://user:password@host:5432/dbname   (Render gives you this)
- * or the separate DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD variables.
- * Optional: DB_SSLMODE (default "prefer"; use "require" for Render's external URL).
- */
+* MDRRMO Response Emergency System
+* PostgreSQL connection helper.
+*
+* Requires DATABASE_URL in Render environment variables.
+*/
 
-function db(): PDO
-{
-    static $pdo = null;
-    if ($pdo instanceof PDO) {
-        return $pdo;
-    }
+if (!function_exists('getDatabaseConnection')) {
+   function getDatabaseConnection(): PDO
+   {
+       static $pdo = null;
 
-    $url = getenv('DATABASE_URL');
-    if ($url) {
-        $p    = parse_url($url);
-        $host = $p['host'] ?? '';
-        $port = $p['port'] ?? 5432;
-        $name = ltrim($p['path'] ?? '', '/');
-        $user = isset($p['user']) ? urldecode($p['user']) : '';
-        $pass = isset($p['pass']) ? urldecode($p['pass']) : '';
-    } else {
-        $host = getenv('DB_HOST') ?: '';
-        $port = getenv('DB_PORT') ?: 5432;
-        $name = getenv('DB_NAME') ?: '';
-        $user = getenv('DB_USER') ?: '';
-        $pass = getenv('DB_PASSWORD') ?: '';
-    }
+       if ($pdo instanceof PDO) {
+           return $pdo;
+       }
 
-    if ($host === '' || $name === '' || $user === '') {
-        throw new RuntimeException('Database settings are missing. Set DATABASE_URL in the environment.');
-    }
+       $databaseUrl = getenv('DATABASE_URL');
 
-    $ssl = getenv('DB_SSLMODE') ?: 'prefer';
-    $dsn = "pgsql:host=$host;port=$port;dbname=$name;sslmode=$ssl";
+       if (!$databaseUrl) {
+           error_log('MDRRMO: DATABASE_URL is not configured.');
+           throw new RuntimeException(
+               'Database configuration is unavailable.'
+           );
+       }
 
-    $pdo = new PDO($dsn, $user, $pass, [
-        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        PDO::ATTR_EMULATE_PREPARES   => false,
-    ]);
-    return $pdo;
+       $db = parse_url($databaseUrl);
+
+       if (
+           $db === false ||
+           empty($db['host']) ||
+           empty($db['user']) ||
+           !isset($db['pass']) ||
+           empty($db['path']) ||
+           $db['path'] === '/'
+       ) {
+           error_log('MDRRMO: Invalid DATABASE_URL.');
+           throw new RuntimeException(
+               'Database configuration is invalid.'
+           );
+       }
+
+       $host = $db['host'];
+       $port = (int) ($db['port'] ?? 5432);
+       $username = rawurldecode($db['user']);
+       $password = rawurldecode($db['pass']);
+       $database = rawurldecode(ltrim($db['path'], '/'));
+
+       $query = [];
+       parse_str($db['query'] ?? '', $query);
+
+       $sslmode = $query['sslmode']
+           ?? getenv('PGSSLMODE')
+           ?: 'require';
+
+       $dsn = sprintf(
+           'pgsql:host=%s;port=%d;dbname=%s;sslmode=%s',
+           $host,
+           $port,
+           $database,
+           $sslmode
+       );
+
+       try {
+           $pdo = new PDO($dsn, $username, $password, [
+               PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+               PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+               PDO::ATTR_EMULATE_PREPARES => false,
+               PDO::ATTR_TIMEOUT => 10
+           ]);
+
+           return $pdo;
+
+       } catch (PDOException $e) {
+           error_log(
+               'MDRRMO PostgreSQL connection failed: ' .
+               $e->getMessage()
+           );
+
+           throw new RuntimeException(
+               'Database connection failed.',
+               0,
+               $e
+           );
+       }
+   }
 }
