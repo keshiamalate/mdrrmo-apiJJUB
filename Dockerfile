@@ -1,21 +1,38 @@
-FROM php:8.2-apache
+FROM php:8.3-apache
 
-# PostgreSQL driver for PDO
+# Install PostgreSQL development dependencies and PHP PDO driver
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libpq-dev \
- && docker-php-ext-install pdo pdo_pgsql \
- && rm -rf /var/lib/apt/lists/*
+   && apt-get install -y --no-install-recommends libpq-dev \
+   && docker-php-ext-install pdo_pgsql \
+   && a2enmod rewrite \
+   && rm -rf /var/lib/apt/lists/*
 
-# Serve only the public/ folder
-ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
-RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf \
- && sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
+# Apache document root
+ENV APACHE_DOCUMENT_ROOT=/var/www/html
 
-WORKDIR /var/www/html
-COPY . /var/www/html
+# Copy public API files into Apache's document root
+COPY public/ /var/www/html/
 
-# Allow uploads up to 3 MB
-RUN printf "upload_max_filesize=3M\npost_max_size=4M\n" > /usr/local/etc/php/conf.d/uploads.ini
+# Keep application/database code outside the public web directory
+COPY src/ /var/www/src/
 
-# Render tells the app which port to use through $PORT
-CMD ["sh", "-c", "sed -i \"s/80/${PORT:-80}/g\" /etc/apache2/ports.conf /etc/apache2/sites-available/000-default.conf && apache2-foreground"]
+# Set ownership for the application files
+RUN chown -R www-data:www-data /var/www/html /var/www/src
+
+# Configure Apache to listen on Render's assigned port
+# Defaults to 10000 if PORT is not set
+RUN printf '%s\n' \
+   '#!/bin/sh' \
+   'set -eu' \
+   'PORT="${PORT:-10000}"' \
+   'sed -ri "s/^Listen 80$/Listen ${PORT}/" /etc/apache2/ports.conf' \
+   'sed -ri "s/<VirtualHost \*:80>/<VirtualHost *:${PORT}>/" /etc/apache2/sites-available/000-default.conf' \
+   'exec apache2-foreground' \
+   > /usr/local/bin/render-entrypoint \
+   && chmod +x /usr/local/bin/render-entrypoint
+
+# Document the default container port
+EXPOSE 10000
+
+# Start Apache using Render's port
+CMD ["/usr/local/bin/render-entrypoint"]
